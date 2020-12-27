@@ -1,0 +1,487 @@
+diff -uNr os-prober.orig/os-prober os-prober/os-prober
+--- os-prober.orig/os-prober	2015-07-15 13:57:55.753294140 +0300
++++ os-prober/os-prober	2015-07-15 13:58:22.515341230 +0300
+@@ -137,6 +137,7 @@
+ : >"$OS_PROBER_TMP/btrfs-vols"
+ 
+ ( (
++devices=""
+ for partition in $(partitions); do
+ 	if ! mapped="$(mapdevfs "$partition")"; then
+ 		log "Device '$partition' does not exist; skipping"
+@@ -200,6 +201,22 @@
+ 			done
+ 		fi
+ 	fi
++
++	for test in /usr/libexec/os-probes/unmounted/*; do
++		if [ -f "$test" ] && [ -x "$test" ]; then
++			type=$(blkid -o value -s TYPE $partition || true)
++			debug "running $test on $partition"
++			entry=$("$test" "$partition" "$type" || true)
++			if [ ! -z "$entry"]; then
++				debug "os detected by $test"
++				device=$(echo $entry | cut -d : -f 1)
++				if ! echo $devices | grep $device > /dev/null; then
++					echo "$entry"
++				fi
++				break
++			fi
++		fi
++	done
+ done
+ ) 9>&1 | logger 1>&-  # fd_logger
+ ) 3>&1  # fd_result
+diff -uNr os-prober.orig/os-probes/common/50mounted-tests os-prober/os-probes/common/50mounted-tests
+--- os-prober.orig/os-probes/common/50mounted-tests	2015-07-15 13:57:55.763294158 +0300
++++ os-prober/os-probes/common/50mounted-tests	2015-07-15 13:58:22.526341250 +0300
+@@ -146,9 +146,20 @@
+ else
+ 	ro_partition "$partition"
+ 	for type in $types $delaytypes; do
+-		if mount -o ro -t "$type" "$partition" "$tmpmnt" 2>/dev/null; then
++		if [ "$type" = ufs ]; then
++			for ufstype in ufs2 44bsd old; do
++				if mount -o ro,ufstype=$ufstype -t "$type" "$partition" "$tmpmnt" 2>/dev/null; then
++					mounted=1
++				fi
++			done
++		else
++			if mount -o ro -t "$type" "$partition" "$tmpmnt" 2>/dev/null; then
++				mounted=1
++			fi
++		fi
++
++		if [ "$mounted" ]; then
+ 			debug "mounted as $type filesystem"
+-			mounted=1
+ 			break
+ 		fi
+ 	done
+diff -uNr os-prober.orig/os-probes/mounted/common/35linux-release os-prober/os-probes/mounted/common/35linux-release
+--- os-prober.orig/os-probes/mounted/common/35linux-release	1970-01-01 03:00:00.000000000 +0300
++++ os-prober/os-probes/mounted/common/35linux-release	2015-07-15 13:58:22.437341093 +0300
+@@ -0,0 +1,48 @@
++#!/bin/sh
++# Test for Linux distributions
++set -e
++
++. /usr/share/os-prober/common.sh
++
++partition="$1"
++dir="$2"
++type="$3"
++
++os_field () {
++	file="$1"
++	field="$2"
++	grep ^"$field=" "$file" | cut -d = -f 2 | sed 's/^"//' | sed 's/"$//' | sed 's/:/ /g'
++}
++
++file="$dir/etc/os-release"
++if [ ! -e "$file" ]; then
++	exit 1
++fi
++
++long=$(os_field "$file" PRETTY_NAME)
++if [ -z "$long" ]; then
++	name=$(os_field "$file" NAME)
++	if [ -z "$name" ]; then
++		exit 1
++	fi
++
++	version=$(os_field "$file" VERSION)
++	if [ -z "$version" ]; then
++		version=$(os_field "$file" VERSION_ID)
++	fi
++
++	if [ -n "$version" ]; then
++		long="$name $version"
++	else
++		long="$name"
++	fi
++fi
++
++short=$(os_field "$file" ID | sed 's/ //g')
++if [ -z "$short" ]; then
++	short="linux"
++fi
++
++label="$(count_next_label "$short")"
++result "$partition:$long:$label:linux"
++exit 0
+diff -uNr os-prober.orig/os-probes/mounted/common/40lsb os-prober/os-probes/mounted/common/40lsb
+--- os-prober.orig/os-probes/mounted/common/40lsb	2015-07-15 13:57:55.679294009 +0300
++++ os-prober/os-probes/mounted/common/40lsb	2015-07-15 13:58:22.436341091 +0300
+@@ -11,7 +11,7 @@
+ lsb_field () {
+ 	file="$1"
+ 	field="$2"
+-	grep ^"$field" "$file" | cut -d = -f 2 | sed 's/^"//' | sed 's/"$//' | sed 's/:/ /g'
++	grep ^"$field=" "$file" | cut -d = -f 2 | sed 's/^"//' | sed 's/"$//' | sed 's/:/ /g'
+ }
+ 
+ file="$dir/etc/lsb-release"
+@@ -19,23 +19,24 @@
+ 	exit 1
+ fi
+ 
+-release=$(lsb_field "$file" DISTRIB_RELEASE)
+-if [ -z "$release" ]; then
+-	release=$(lsb_field "$file" DISTRIB_CODENAME)
+-fi
+-description=$(lsb_field "$file" DISTRIB_DESCRIPTION)
+-if [ -z "$description" ]; then
+-	description=$(lsb_field "$file" DISTRIB_CODENAME)
+-fi
++long=$(lsb_field "$file" DISTRIB_DESCRIPTION)
++if [ -z "$long" ]; then
++	name=$(lsb_field "$file" DISTRIB_ID)
++	if [ -z "$name" ]; then
++		exit 1
++	fi
+ 
+-if [ -n "$description" ]; then
+-	if [ -n "$release" ]; then
+-		long="$description ($release)"
++	version=$(lsb_field "$file" DISTRIB_RELEASE)
++	if [ -n "$version" ]; then
++		long="$name $version"
+ 	else
+-		long="$description"
++		long="$name"
+ 	fi
+-else
+-	exit 1
++fi
++
++codename=$(lsb_field "$file" DISTRIB_CODENAME)
++if [ -n "$codename" ]; then
++	long="$long ($codename)"
+ fi
+ 
+ short=$(lsb_field "$file" DISTRIB_ID | sed 's/ //g')
+diff -uNr os-prober.orig/os-probes/mounted/common/90bsd-distro os-prober/os-probes/mounted/common/90bsd-distro
+--- os-prober.orig/os-probes/mounted/common/90bsd-distro	1970-01-01 03:00:00.000000000 +0300
++++ os-prober/os-probes/mounted/common/90bsd-distro	2015-07-15 13:59:16.973437064 +0300
+@@ -0,0 +1,74 @@
++#!/bin/sh
++# Test for *BSD distributions.
++set -e
++
++. /usr/share/os-prober/common.sh
++
++partition="$1"
++dir="$2"
++type="$3"
++
++if [ "$type" = ufs ]; then
++    disk=$(echo $partition |
++           grep -E '[[:alpha:][:punct:]]+[[:digit:]]+' |
++           sed -r 's|([[:alpha:][:punct:]]+)[[:digit:]]+|\1|')
++
++    if [ ! -z "$disk" ]; then
++        system=$(fdisk -l $disk |
++                 grep -E ''$partition'[[:blank:]]+\*[[:blank:]]+.+[[:blank:]]+.+BSD' |
++                 sed -r 's|.*[[:blank:]]+(.+BSD)|\1|')
++
++        if [ -z "$system" ]; then
++            system=$(fdisk -l $disk |
++                     grep -E ''$partition'.*[[:blank:]]+.+BSD UFS' |
++                     sed -r 's|'$partition'.*[[:blank:]]+(.+BSD) UFS|\1|')
++        fi
++
++        if [ ! -z "$system" ]; then
++            if [[ ! -f $dir/boot/loader && ! -f $dir/boot ]]; then
++                exit 1
++            fi
++
++            title=
++
++            if [ -f $dir/etc/release ]; then
++                title=$(head -1 $dir/etc/release)
++            fi
++
++            if [[ -z "$title" && -f $dir/bin/freebsd-version && -x $dir/bin/freebsd-version ]]; then
++                 version="`$dir/bin/freebsd-version`" || true
++                 if [ -n "$version" ]; then
++                     title="FreeBSD $version"
++                 fi
++            fi
++
++            if [[ -z "$title" && -f $dir/etc/motd ]]; then
++                title=$(cat $dir/etc/motd |
++                        grep -E ''$system'[[:blank:]]+[[:graph:]]+[[:blank:]]+\([[:print:]]+\)' |
++                        sed -r 's|('$system'[[:blank:]]+[[:graph:]]+[[:blank:]]+\([[:print:]]+\)).*|\1|')
++            fi
++
++            if [ -z "$title" ]; then
++                title="$system"
++            fi
++
++            case $system in
++            FreeBSD|MidnightBSD) boot="kfreebsd";;
++            NetBSD) boot="knetbsd";;
++            OpenBSD) boot="kopenbsd";;
++            *) boot="chain";;
++            esac
++
++            label="$(count_next_label "$system")"
++            result "$partition:$title:$label:$boot"
++
++            exit 0
++        else
++            exit 1
++        fi
++    else
++        exit 1
++    fi
++else
++    exit 1
++fi
+diff -uNr os-prober.orig/os-probes/mounted/common/90linux-distro os-prober/os-probes/mounted/common/90linux-distro
+--- os-prober.orig/os-probes/mounted/common/90linux-distro	2015-07-15 13:57:55.676294004 +0300
++++ os-prober/os-probes/mounted/common/90linux-distro	2015-07-15 13:58:22.427341075 +0300
+@@ -1,5 +1,5 @@
+ #!/bin/sh
+-# Test for linux distributions.
++# Test for linux distributions
+ set -e
+ 
+ . /usr/share/os-prober/common.sh
+@@ -19,130 +19,48 @@
+ # symlinks we need to also check in $dir/usr/lib* for distributions that
+ # moved /lib* to /usr and only left symlinks behind.
+ # TODO: look for ld-linux.so on arches that have it
++
+ if [ -L "$dir"/lib ] || (ls "$dir"/lib*/ld*.so* || ls "$dir"/usr/lib*/ld*.so*) >/dev/null 2>/dev/null; then
+-	if [ -e "$dir/etc/debian_version" ]; then
+-		short="Debian"
+-		long="$(printf "Debian GNU/Linux (%s)\n" "$(cat "$dir/etc/debian_version")")"
+-	# RPM derived distributions may also have a redhat-release or
+-	# mandrake-release, so check their files first.
+-	elif [ -e "$dir/etc/altlinux-release" ]; then
+-		short="ALTLinux"
+-		long="$(cat "$dir/etc/altlinux-release")"
+-	elif [ -e "$dir/etc/magic-release" ]; then
+-		short="Magic"
+-		long="$(cat "$dir/etc/magic-release")"
+-	elif [ -e "$dir/etc/blackPanther-release" ]; then
+-		short="blackPanther"
+-		long="$(cat "$dir/etc/blackPanther-release")"
+-	elif [ -e "$dir/etc/ark-release" ]; then
+-		short="Ark"
+-		long="$(cat "$dir/etc/ark-release")"
+-	elif [ -e "$dir/etc/arch-release" ]; then
+-		short="Arch"
+-		long="$(cat "$dir/etc/arch-release")"
+-	elif [ -e "$dir/etc/asplinux-release" ]; then
+-		short="ASPLinux"
+-		long="$(cat "$dir/etc/asplinux-release")"
+-	elif [ -e "$dir/etc/lvr-release" ]; then
+-		short="LvR"
+-		long="$(cat "$dir/etc/lvr-release")"
+-	elif [ -e "$dir/etc/caos-release" ]; then
+-		short="cAos"
+-		long="$(cat "$dir/etc/caos-release")"
+-	elif [ -e "$dir/etc/aurox-release" ]; then
+-		short="Aurox"
+-		long="$(cat "$dir/etc/aurox-release")"
+-	elif [ -e "$dir/etc/engarde-release" ]; then
+-		short="EnGarde"
+-		long="$(cat "$dir/etc/engarde-release")"
+-	elif [ -e "$dir/etc/vine-release" ]; then
+-		short="Vine"
+-		long="$(cat "$dir/etc/vine-release")"
+-	elif [ -e "$dir/etc/whitebox-release" ]; then
+-		short="WhiteBox"
+-		long="$(cat "$dir/etc/whitebox-release")"
+-	elif [ -e "$dir/etc/pld-release" ]; then
+-		short="PLD"
+-		long="$(cat "$dir/etc/pld-release")"
+-	elif [ -e "$dir/etc/startcom-release" ]; then
+-		short="StartCom"
+-		long="$(cat "$dir/etc/startcom-release")"
+-	elif [ -e "$dir/etc/trustix-release" ]; then
+-		short="Trustix"
+-		long="$(cat "$dir/etc/trustix-release")"
+-	elif [ -e "$dir/etc/openna-release" ]; then
+-		short="OpenNA"
+-		long="$(cat "$dir/etc/openna-release")"
+-	elif [ -e "$dir/etc/conectiva-release" ]; then
+-		short="Conectiva"
+-		long="$(cat "$dir/etc/conectiva-release")"
+-	elif [ -e "$dir/etc/mandrake-release" ]; then
+-		short="Mandrake"
+-		long="$(cat "$dir/etc/mandrake-release")"
+-	elif [ -e "$dir/etc/fedora-release" ]; then
+-		short="Fedora"
+-		long="$(cat "$dir/etc/fedora-release")"
+-	elif [ -e "$dir/etc/redhat-release" ]; then
+-		short="RedHat"
+-		long="$(cat "$dir/etc/redhat-release")"
+-	elif [ -e "$dir/etc/SuSE-release" ]; then
+-		short="SuSE"
+-		long="$(head -n 1 "$dir/etc/SuSE-release")"
+-	elif [ -e "$dir/etc/gentoo-release" ]; then
+-		short="Gentoo"
+-		long="$(cat "$dir/etc/gentoo-release")"
+-	elif [ -e "$dir/etc/cobalt-release" ]; then
+-		short="Cobalt"
+-		long="$(cat "$dir/etc/cobalt-release")"
+-	elif [ -e "$dir/etc/yellowdog-release" ]; then
+-		short="YellowDog"
+-		long="$(cat "$dir/etc/yellowdog-release")"
+-	elif [ -e "$dir/etc/turbolinux-release" ]; then
+-		short="Turbolinux"
+-		long="$(cat "$dir/etc/turbolinux-release")"
+-	elif [ -e "$dir/etc/pardus-release" ]; then
+-		short="Pardus"
+-		long="$(cat "$dir/etc/pardus-release")"
+-	elif [ -e "$dir/etc/kanotix-version" ]; then
+-		short="Kanotix"
+-		long="$(cat "$dir/etc/kanotix-version")"
+-	elif [ -e "$dir/etc/slackware-version" ]; then
+-		short="Slackware"
+-		long="$(printf "Slackware Linux (%s)\n" "$(cat "$dir/etc/slackware-version")")"
+-	elif [ -e "$dir/sbin/pkgtool" ]; then
+-		short="Slackware"
+-		long="Slackware Linux"
+-	elif grep -qs OpenLinux "$dir/etc/issue"; then
+-		short="Caldera"
+-		long="Caldera OpenLinux"
+-	elif [ -e "$dir/etc/frugalware-release" ]; then
+-		short="Frugalware Linux"
+-		long="$(cat "$dir/etc/frugalware-release")"
+-	elif [ -e "$dir/etc/kdemar-release" ]; then
+-		short="K-DEMar"
+-		long="$(printf "K-DEMar GNU/Linux (%s)\n" "$(cat "$dir/etc/kdemar-release")")"
+-	elif [ -e "$dir/etc/lfs-release" ]; then
+-		short="LFS"
+-		long="$(printf "Linux From Scratch (%s)\n" "$(cat "$dir/etc/lfs-release")")"
+-	elif [ -e "$dir/etc/meego-release" ]; then
+-		short="MeeGo"
+-		long="$(head -1 "$dir/etc/meego-release")"
+-	elif (ls "$dir"/lib*/ld*.so*  && [ -d "$dir/boot" ] || ls "$dir"/usr/lib*/ld*.so*) >/dev/null 2>/dev/null; then
+-		# Don't report 'Linux distribution' if only a /lib symlink is found or if this is 
+-		# a partition without /boot (should be /usr partition)
+-		short="Linux"
+-		long="unknown Linux distribution"
+-	else
+-		exit 1
+-	fi
+-	
+-        label="$(count_next_label "$short")"
+-	if [ "x$type" = "xbtrfs" -a "x$uuid" != "x" -a "x$subvol" != "x" ]; then
+-		result "$partition:$long:$label:linux:$type:$uuid:$subvol"
+-	else
+-		result "$partition:$long:$label:linux"
+-	fi
+-	exit 0
++    label=
++    for pat in -release -version _version; do
++        for fn in $( ls -tr $dir/etc/*$pat 2>/dev/null ); do
++            if [ -L $fn ]; then
++                continue
++            fi
++
++            ident=$(basename $fn)
++            if [ "$ident" = 'lsb-release' ] || [ "$ident" = 'os-release' ]; then
++                continue
++            fi
++
++            title="$(head -1 $fn)"
++            if [ ! -z "$title" ]; then
++                label=$(echo $ident |
++                        sed -r 's/(-release|-version|_version)//g')
++                break
++            fi
++        done
++    done
++
++    if [ -z "$label" ]; then
++        if (ls "$dir"/lib*/ld*.so*  && [ -d "$dir/boot" ] || ls "$dir"/usr/lib*/ld*.so*) >/dev/null 2>/dev/null; then
++            # Don't report 'Linux distribution' if only a /lib symlink is found or if this is 
++            # a partition without /boot (should be /usr partition)
++
++            label="Linux"
++            title="unknown Linux distribution"
++        else
++            exit 1
++        fi
++    fi
++
++    label="$(count_next_label "$label")"
++    if [ "x$type" = "xbtrfs" -a "x$uuid" != "x" -a "x$subvol" != "x" ]; then
++        result "$partition:$title:$label:linux:$type:$uuid:$subvol"
++    else
++        result "$partition:$title:$label:linux"
++    fi
++    exit 0
+ else
+-	exit 1
++    exit 1
+ fi
+diff -uNr os-prober.orig/os-probes/mounted/x86/20microsoft os-prober/os-probes/mounted/x86/20microsoft
+--- os-prober.orig/os-probes/mounted/x86/20microsoft	2015-07-15 13:57:55.698294043 +0300
++++ os-prober/os-probes/mounted/x86/20microsoft	2015-07-15 13:58:22.462341137 +0300
+@@ -31,7 +31,9 @@
+ 	for boot in $(item_in_dir boot "$2"); do
+ 		bcd=$(item_in_dir bcd "$2/$boot")
+ 		if [ -n "$bcd" ]; then
+-			if grep -aqs "W.i.n.d.o.w.s. .8" "$2/$boot/$bcd"; then
++			if grep -aqs "W.i.n.d.o.w.s. .1.0" "$2/$boot/$bcd"; then
++				long="Windows 10 (loader)"
++			elif grep -aqs "W.i.n.d.o.w.s. .8" "$2/$boot/$bcd"; then
+ 				long="Windows 8 (loader)"
+ 			elif grep -aqs "W.i.n.d.o.w.s. .7" "$2/$boot/$bcd"; then
+ 				long="Windows 7 (loader)"
+diff -uNr os-prober.orig/os-probes/unmounted/common/90bsd-loader os-prober/os-probes/unmounted/common/90bsd-loader
+--- os-prober.orig/os-probes/unmounted/common/90bsd-loader	1970-01-01 03:00:00.000000000 +0300
++++ os-prober/os-probes/unmounted/common/90bsd-loader	2015-07-15 13:58:22.478341165 +0300
+@@ -0,0 +1,45 @@
++#!/bin/sh
++# Test for *BSD loaders.
++set -e
++
++. /usr/share/os-prober/common.sh
++
++partition="$1"
++type="$2"
++
++if [ "$type" = zfs_member ]; then
++    disk=$(echo $partition |
++           grep -E '[[:alpha:][:punct:]]+[[:digit:]]+' |
++           sed -r 's|([[:alpha:][:punct:]]+)[[:digit:]]+|\1|')
++
++    if [ ! -z "$disk" ]; then
++        zvols=$(fdisk -l $disk |
++                grep -E '.*[[:blank:]]+.+BSD ZFS' |
++                sed -r 's|.*[[:blank:]]+(.+BSD) ZFS|\1|')
++
++        if [ ! -z "$zvols" ]; then
++            system=$(fdisk -l $disk |
++                     grep -E '.*[[:blank:]]+(.+BSD|BIOS) boot' |
++                     sed -r 's|.*[[:blank:]]+(.+BSD\|BIOS) boot|\1|')
++
++            if [ "$system" = BIOS ]; then
++                system="BSD"
++            fi
++
++            if [ ! -z "$system" ]; then
++                title="Boot Manager $system"
++
++                label="$(count_next_label "$system")"
++                result "$disk:$title:$label:chain"
++            else
++                exit 1
++            fi
++        else
++            exit 1
++        fi
++    else
++        exit 1
++    fi
++else
++    exit 1
++fi

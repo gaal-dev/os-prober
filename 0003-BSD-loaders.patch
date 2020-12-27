@@ -1,0 +1,81 @@
+From 491a6005fbd6317bc27a78640bb2baff4d4d82c9 Mon Sep 17 00:00:00 2001
+From: Andrew Gavrilin <gaal.dev@gmail.com>
+Date: Wed, 15 Jul 2015 11:49:14 +0300
+Subject: [PATCH 2/2] BSD loaders
+
+---
+ util/grub-mkconfig_lib.in   |  2 +-
+ util/grub.d/30_os-prober.in | 22 ++++++++++++++++++----
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/util/grub-mkconfig_lib.in b/util/grub-mkconfig_lib.in
+index 121f5a1..d29b3bb 100644
+--- a/util/grub-mkconfig_lib.in
++++ b/util/grub-mkconfig_lib.in
+@@ -139,7 +139,7 @@ prepare_grub_to_access_device ()
+     echo "insmod ${module}"
+   done
+ 
+-  fs="`"${grub_probe}" --device $@ --target=fs`"
++  fs="`"${grub_probe}" --device $@ --target=fs &>/dev/null`" || true
+   for module in ${fs} ; do
+     echo "insmod ${module}"
+   done
+diff --git a/util/grub.d/30_os-prober.in b/util/grub.d/30_os-prober.in
+index 0e9d999..614042d 100644
+--- a/util/grub.d/30_os-prober.in
++++ b/util/grub.d/30_os-prober.in
+@@ -112,7 +112,7 @@ for OS in ${OSPROBED} ; do
+   LONGNAME="`echo ${OS} | cut -d ':' -f 2 | tr '^' ' '`"
+   LABEL="`echo ${OS} | cut -d ':' -f 3 | tr '^' ' '`"
+   BOOT="`echo ${OS} | cut -d ':' -f 4`"
+-  if UUID="`${grub_probe} --target=fs_uuid --device ${DEVICE%@*}`"; then
++  if UUID="`${grub_probe} --target=fs_uuid --device ${DEVICE%@*} &>/dev/null`"; then
+     EXPUUID="$UUID"
+ 
+     if [ x"${DEVICE#*@}" != x ] ; then
+@@ -161,7 +161,7 @@ for OS in ${OSPROBED} ; do
+   gettext_printf "Found %s on %s\n" "${LONGNAME}" "${DEVICE}" >&2
+ 
+   case ${BOOT} in
+-    chain)
++    chain|kfreebsd|knetbsd|kopenbsd)
+ 
+ 	  onstr="$(gettext_printf "(on %s)" "${DEVICE}")"
+       cat << EOF
+@@ -177,7 +177,14 @@ EOF
+       fi
+ 
+       case ${LONGNAME} in
+-	Windows\ Vista*|Windows\ 7*|Windows\ Server\ 2008*)
++	Windows\ Vista*|\
++	Windows\ 10*|\
++	Windows\ 8*|\
++	Windows\ 7*|\
++	Windows\ Server\ 2008*|\
++	Windows\ Recovery\ Environment*|\
++	Windows\ Boot\ Manager|\
++	*BSD*)
+ 	;;
+ 	*)
+ 	  cat << EOF
+@@ -186,8 +193,15 @@ EOF
+ 	;;
+       esac
+ 
++      case ${BOOT} in
++      kfreebsd) loader="kfreebsd /boot/loader";;
++      knetbsd) loader="knetbsd /netbsd";;
++      kopenbsd) loader="kopenbsd /bsd";;
++      *) loader="chainloader +1";;
++      esac
++
+       cat <<EOF
+-	chainloader +1
++	$loader
+ }
+ EOF
+     ;;
+-- 
+2.4.3
+
